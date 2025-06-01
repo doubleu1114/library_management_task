@@ -2,11 +2,11 @@
 
 window.onload = function () {
     const params = getQueryParams();
-    const file = params['file'];
+    const entityType = params['entity']; // 'book', 'author', 'publisher', or 'genre'
     const id = params['id'];
 
-    if (file && id) {
-        displayEntity(file, id);
+    if (entityType && id) {
+        displayEntity(entityType, id);
     } else {
         document.getElementById('content').innerHTML = '<p>Invalid parameters.</p>';
     }
@@ -32,7 +32,7 @@ function getQueryParams() {
  * @param {string} entityName - The name of the entity (book, author, genre, etc.).
  */
 async function fetchGeminiDescription(entityName) {
-    console.log('Fetching description for:', entityName); // Debug
+    console.log('Fetching description for:', entityName);
     try {
         const response = await fetch(`/api/description?name=${encodeURIComponent(entityName)}`, {
             method: 'GET',
@@ -40,7 +40,6 @@ async function fetchGeminiDescription(entityName) {
                 'Content-Type': 'application/json'
             }
         });
-        console.log('Fetch response status:', response.status); // Debug
 
         if (response.status === 400) {
             throw new Error('Invalid request. Entity name is missing.');
@@ -51,7 +50,6 @@ async function fetchGeminiDescription(entityName) {
         }
 
         const data = await response.json();
-        console.log('Received data:', data); // Debug
         const descriptionMarkdown = data.description || 'No description available.';
 
         // Convert Markdown to HTML using Marked.js
@@ -66,192 +64,112 @@ async function fetchGeminiDescription(entityName) {
 }
 
 /**
- * Asynchronously fetches and parses an XML file.
- * @param {string} filePath - The relative path to the XML file.
- * @returns {Promise<Document>} A promise that resolves to the parsed XML Document.
+ * Fetches entity details from the backend API
+ * @param {string} entityType - The type of entity ('book', 'author', 'publisher', 'genre')
+ * @param {string} id - The ID of the entity
  */
-async function fetchXML(filePath) {
+async function fetchEntity(entityType, id) {
     try {
-        const response = await fetch(`/static/data/${filePath}`);
+        const response = await fetch(`/api/${entityType}s/${id}`);
         if (!response.ok) {
-            throw new Error(`Failed to fetch ${filePath}: ${response.statusText}`);
+            throw new Error(`Failed to fetch ${entityType}: ${response.statusText}`);
         }
-        const textData = await response.text();
-        const parser = new DOMParser();
-        const xmlDoc = parser.parseFromString(textData, "application/xml");
-        
-        // Check for parsing errors
-        const parserError = xmlDoc.getElementsByTagName("parsererror");
-        if (parserError.length > 0) {
-            throw new Error(`Error parsing ${filePath}`);
-        }
-
-        return xmlDoc;
+        return await response.json();
     } catch (error) {
-        console.error(`Error fetching/parsing ${filePath}:`, error);
+        console.error(`Error fetching ${entityType}:`, error);
         throw error;
     }
 }
 
 /**
- * Parses entities from an XML Document.
- * @param {Document} xmlDoc - The parsed XML Document.
- * @param {string} entityName - The tag name of the entities to parse (e.g., 'Author', 'Publisher').
- * @returns {Object} An object mapping entity IDs to their names.
+ * Displays the details of a specific entity
+ * @param {string} entityType - The type of entity ('book', 'author', 'publisher', 'genre')
+ * @param {string} id - The ID of the entity to display
  */
-function parseEntities(xmlDoc, entityName) {
-    const entities = {};
-    const elements = xmlDoc.getElementsByTagName(entityName);
-    for (let i = 0; i < elements.length; i++) {
-        const element = elements[i];
-        const id = element.getAttribute('id');
-        const nameElement = element.getElementsByTagName('Name')[0];
-        const name = nameElement ? nameElement.textContent : 'Unknown';
-        entities[id] = name;
-    }
-    return entities;
-}
-
-/**
- * Displays the details of a specific entity based on the provided file and ID.
- * @param {string} file - The XML file to fetch (e.g., 'books.xml', 'authors.xml').
- * @param {string} id - The ID of the entity to display.
- */
-async function displayEntity(file, id) {
+async function displayEntity(entityType, id) {
     try {
-        // Fetch and parse the main XML file
-        const mainDoc = await fetchXML(file);
-        
-        // Select the entity by its ID
-        const entity = mainDoc.querySelector(`[id='${id}']`);
+        // Fetch entity details from the API
+        const entity = await fetchEntity(entityType, id);
         if (!entity) {
             document.getElementById('content').innerHTML = '<p>Entity not found.</p>';
             return;
         }
 
-        // Determine the entity type based on the entity's localName
-        const entityType = entity.localName;
+        // Build the HTML content
+        let htmlContent = `<h1>${entityType.charAt(0).toUpperCase() + entityType.slice(1)} Details</h1><ul>`;
 
-        // Initialize variables for linked entities
-        let authors = {};
-        let publishers = {};
-        let genres = {};
-        let books = {};
-
-        // Collect linked files from child elements
-        const linkedFiles = new Set();
-        let entityName = '';
-
-        for (let i = 0; i < entity.children.length; i++) {
-            const child = entity.children[i];
-            const xlinkHref = child.getAttribute('xlink:href');
-            if (xlinkHref) {
-                const [filePath, linkedId] = xlinkHref.split('#');
-                linkedFiles.add(filePath);
-            } else if (child.localName === 'Title' || child.localName === 'Name') {
-                entityName = child.textContent; // Get the entity name to pass to Gemini
-            }
+        // Display common fields
+        if (entity.name || entity.title) {
+            htmlContent += `<li><strong>Name:</strong> ${entity.name || entity.title}</li>`;
         }
 
-        // Fetch and parse linked XML files
-        const linkedPromises = Array.from(linkedFiles).map(filePath => fetchXML(filePath));
-        const linkedDocs = await Promise.all(linkedPromises);
-
-        // Parse linked entities
-        linkedDocs.forEach(doc => {
-            const rootName = doc.documentElement.localName;
-            if (rootName === 'Authors') {
-                authors = { ...authors, ...parseEntities(doc, 'Author') };
-            } else if (rootName === 'Publishers') {
-                publishers = { ...publishers, ...parseEntities(doc, 'Publisher') };
-            } else if (rootName === 'Genres') {
-                genres = { ...genres, ...parseEntities(doc, 'Genre') };
-            } else if (rootName === 'Books') {
-                books = { ...books, ...parseEntities(doc, 'Book') };
-            }
-        });
-
-        // Build the HTML content
-        let htmlContent = `<h1>${entityType} Details</h1><ul>`;
-
-        for (let i = 0; i < entity.children.length; i++) {
-            const child = entity.children[i];
-            const childName = child.localName;
-            const childText = child.textContent;
-            const xlinkHref = child.getAttribute('xlink:href');
-
-            if (xlinkHref) {
-                const [filePath, linkedId] = xlinkHref.split('#');
-                let linkedEntityType = '';
-
-                switch (filePath) {
-                    case 'authors.xml':
-                        linkedEntityType = 'Author';
-                        break;
-                    case 'publishers.xml':
-                        linkedEntityType = 'Publisher';
-                        break;
-                    case 'genres.xml':
-                        linkedEntityType = 'Genre';
-                        break;
-                    case 'books.xml':
-                        linkedEntityType = 'Book';
-                        break;
-                    default:
-                        linkedEntityType = 'Unknown';
+        // Display entity-specific fields
+        switch (entityType) {
+            case 'book':
+                htmlContent += `
+                    <li><strong>Author:</strong> <a href="viewer.html?entity=author&id=${entity.author_id}" target="_blank">${entity.author}</a></li>
+                    <li><strong>Publisher:</strong> <a href="viewer.html?entity=publisher&id=${entity.publisher_id}" target="_blank">${entity.publisher}</a></li>
+                    <li><strong>Genre:</strong> <a href="viewer.html?entity=genre&id=${entity.genre_id}" target="_blank">${entity.genre}</a></li>
+                    <li><strong>Status:</strong> ${entity.status}</li>
+                `;
+                
+                // Display borrowing details if book is borrowed
+                if (entity.status === 'Borrowed' && entity.borrow_records) {
+                    const activeBorrow = entity.borrow_records.find(r => !r.actual_return_date);
+                    if (activeBorrow) {
+                        htmlContent += `<h2>Borrowing Details</h2><ul>
+                            <li><strong>Borrower:</strong> ${activeBorrow.borrower_name}</li>
+                            <li><strong>Borrow Date:</strong> ${activeBorrow.borrow_date}</li>
+                            <li><strong>Return Date:</strong> ${activeBorrow.return_date}</li>
+                        </ul>`;
+                    }
                 }
-
-                // Determine the linked entity's name
-                let linkedName = 'Unknown';
-                if (filePath === 'authors.xml' && authors[linkedId]) {
-                    linkedName = authors[linkedId];
-                } else if (filePath === 'publishers.xml' && publishers[linkedId]) {
-                    linkedName = publishers[linkedId];
-                } else if (filePath === 'genres.xml' && genres[linkedId]) {
-                    linkedName = genres[linkedId];
-                } else if (filePath === 'books.xml' && books[linkedId]) {
-                    linkedName = books[linkedId];
+                break;
+                
+            case 'author':
+                if (entity.books && entity.books.length > 0) {
+                    htmlContent += `<li><strong>Books:</strong><ul>`;
+                    entity.books.forEach(book => {
+                        htmlContent += `<li><a href="viewer.html?entity=book&id=${book.id}" target="_blank">${book.title}</a></li>`;
+                    });
+                    htmlContent += `</ul></li>`;
                 }
-
-                // Create hyperlink to the linked entity
-                htmlContent += `<li><strong>${childName}:</strong> <a href="viewer.html?file=${filePath}&id=${linkedId}" target="_blank">${linkedName}</a></li>`;
-            } else {
-                // Regular text content
-                htmlContent += `<li><strong>${childName}:</strong> ${childText}</li>`;
-            }
+                break;
+                
+            case 'publisher':
+                if (entity.books && entity.books.length > 0) {
+                    htmlContent += `<li><strong>Books:</strong><ul>`;
+                    entity.books.forEach(book => {
+                        htmlContent += `<li><a href="viewer.html?entity=book&id=${book.id}" target="_blank">${book.title}</a></li>`;
+                    });
+                    htmlContent += `</ul></li>`;
+                }
+                break;
+                
+            case 'genre':
+                if (entity.books && entity.books.length > 0) {
+                    htmlContent += `<li><strong>Books:</strong><ul>`;
+                    entity.books.forEach(book => {
+                        htmlContent += `<li><a href="viewer.html?entity=book&id=${book.id}" target="_blank">${book.title}</a></li>`;
+                    });
+                    htmlContent += `</ul></li>`;
+                }
+                break;
         }
 
         htmlContent += '</ul>';
-
-        // If viewing a Book, display borrowing details
-        if (entityType === 'Book') {
-            const borrowingData = JSON.parse(localStorage.getItem('borrowingData')) || {};
-            const borrowingDetails = borrowingData[id];
-
-            if (borrowingDetails) {
-                htmlContent += `<h2>Borrowing Details</h2><ul>
-                    <li><strong>Borrower:</strong> ${borrowingDetails.borrowerName}</li>
-                    <li><strong>Borrow Date:</strong> ${borrowingDetails.borrowDate}</li>
-                    <li><strong>Return Date:</strong> ${borrowingDetails.returnDate}</li>
-                </ul>`;
-            } else {
-                htmlContent += `<p>This book is currently available for borrowing.</p>`;
-            }
-        }
-
-        // Add a back link to the main catalog
         htmlContent += `<a href="/" class="back-link">&larr; Back to Catalog</a>`;
 
         // Display the content
         document.getElementById('content').innerHTML = htmlContent;
 
-        // Fetch and display the Gemini description (if entityName exists)
-        if (entityName) {
-            fetchGeminiDescription(entityName);
+        // Fetch and display the Gemini description
+        if (entity.name || entity.title) {
+            fetchGeminiDescription(entity.name || entity.title);
         }
 
     } catch (error) {
         console.error('Error displaying entity:', error);
-        document.getElementById('content').innerHTML = `<p>Error loading entity details.</p>`;
+        document.getElementById('content').innerHTML = `<p>Error loading entity details: ${error.message}</p>`;
     }
 }
